@@ -24,6 +24,11 @@ désaccord, la source est conservée et une erreur est journalisée. Cette
 option est décochée par défaut et demande une confirmation avant de
 lancer la copie, la suppression étant irréversible.
 
+Les dossiers source/destination et l'état de cette case sont mémorisés
+automatiquement dans `%APPDATA%\copy_photos\config.json` (ou
+`~/.config/copy_photos/config.json` hors Windows) et repris au lancement
+suivant.
+
 ## Installation
 
 1. Installer [Python 3](https://www.python.org/downloads/) (cocher "Add

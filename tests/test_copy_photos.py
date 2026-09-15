@@ -85,6 +85,20 @@ def test_resolve_destination_renames_on_conflict(tmp_path):
     assert resolved.already_present is False
 
 
+def test_load_config_missing_file_returns_empty(tmp_path):
+    assert cp.load_config(tmp_path / "does_not_exist.json") == {}
+
+
+def test_save_and_load_config_round_trip(tmp_path):
+    config_file = tmp_path / "subdir" / "config.json"
+    cp.save_config({"source": "E:\\", "dest": "D:\\Photos", "delete_source": True}, config_file)
+    assert cp.load_config(config_file) == {
+        "source": "E:\\",
+        "dest": "D:\\Photos",
+        "delete_source": True,
+    }
+
+
 def test_verify_identical(tmp_path):
     a = tmp_path / "a.bin"
     b = tmp_path / "b.bin"

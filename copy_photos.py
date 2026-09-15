@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import filecmp
 import hashlib
+import json
 import os
 import queue
 import shutil
@@ -20,7 +21,10 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, NamedTuple, Optional
+from typing import Any, Callable, Iterator, NamedTuple, Optional
+
+CONFIG_DIR_NAME = "copy_photos"
+CONFIG_FILE_NAME = "config.json"
 
 PHOTO_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".heic", ".heif",
@@ -32,6 +36,29 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m2ts", ".3gp", ".mkv", ".w
 # DateTimeOriginal, DateTimeDigitized, DateTime (dans cet ordre de préférence)
 EXIF_DATETIME_TAGS = (36867, 36868, 306)
 EXIF_DATE_FORMAT = "%Y:%m:%d %H:%M:%S"
+
+
+def config_path() -> Path:
+    """Emplacement du fichier mémorisant les derniers réglages utilisés."""
+    base = os.environ.get("APPDATA")
+    if base:
+        return Path(base) / CONFIG_DIR_NAME / CONFIG_FILE_NAME
+    return Path.home() / ".config" / CONFIG_DIR_NAME / CONFIG_FILE_NAME
+
+
+def load_config(path: Optional[Path] = None) -> dict[str, Any]:
+    try:
+        with open(path or config_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(config: dict[str, Any], path: Optional[Path] = None) -> None:
+    target = path or config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 def file_mtime(path: Path) -> datetime:
@@ -203,14 +230,27 @@ def run_gui() -> None:
             self.title("Copie photos SD -> disque dur")
             self.geometry("640x480")
 
-            self.source_var = tk.StringVar()
-            self.dest_var = tk.StringVar()
-            self.delete_var = tk.BooleanVar(value=False)
+            config = load_config()
+            self.source_var = tk.StringVar(value=config.get("source", ""))
+            self.dest_var = tk.StringVar(value=config.get("dest", ""))
+            self.delete_var = tk.BooleanVar(value=config.get("delete_source", False))
             self._queue: "queue.Queue" = queue.Queue()
             self._stop_requested = False
 
             self._build_widgets()
+            self.source_var.trace_add("write", self._save_config)
+            self.dest_var.trace_add("write", self._save_config)
+            self.delete_var.trace_add("write", self._save_config)
             self.after(100, self._poll_queue)
+
+        def _save_config(self, *_args: object) -> None:
+            save_config(
+                {
+                    "source": self.source_var.get(),
+                    "dest": self.dest_var.get(),
+                    "delete_source": self.delete_var.get(),
+                }
+            )
 
         def _build_widgets(self) -> None:
             pad = {"padx": 8, "pady": 4}
