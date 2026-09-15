@@ -283,9 +283,16 @@ def run_gui() -> None:
 
     class PreviewWindow(tk.Toplevel):
         """Fenêtre d'aperçu : grille de miniatures avec case à cocher par
-        fichier pour choisir ce qui sera effectivement copié."""
+        fichier pour choisir ce qui sera effectivement copié.
+
+        La grille s'affiche immédiatement avec des icônes provisoires ; les
+        miniatures sont générées dans un thread d'arrière-plan (lecture et
+        redimensionnement d'image, potentiellement lents pour du RAW) puis
+        appliquées au fur et à mesure, sans jamais bloquer l'interface.
+        """
 
         COLUMNS = 4
+        POLL_INTERVAL_MS = 50
 
         def __init__(
             self,
@@ -297,7 +304,10 @@ def run_gui() -> None:
             self.title(f"Aperçu avant copie ({len(items)} fichier(s))")
             self.geometry("820x600")
             self.selection = selection
-            self._images: list = []
+            self._images: dict[int, Any] = {}
+            self._thumb_labels: dict[int, tk.Label] = {}
+            self._thumb_queue: "queue.Queue[tuple[int, Any]]" = queue.Queue()
+            self._closed = False
 
             top = tk.Frame(self)
             top.pack(fill="x", padx=8, pady=4)
@@ -318,21 +328,56 @@ def run_gui() -> None:
                 cell = tk.Frame(scrollable.inner, borderwidth=1, relief="groove")
                 cell.grid(row=i // self.COLUMNS, column=i % self.COLUMNS, padx=4, pady=4)
 
-                thumb = make_thumbnail(item.path) if item.kind == "pic" else None
-                if thumb is not None:
-                    from PIL import ImageTk
-
-                    photo = ImageTk.PhotoImage(thumb)
-                    self._images.append(photo)
-                    tk.Label(cell, image=photo).pack()
+                if item.kind == "pic":
+                    thumb_label = tk.Label(cell, text="...", font=("", 32), width=6, height=3)
+                    thumb_label.pack()
+                    self._thumb_labels[i] = thumb_label
                 else:
-                    icon = "🎞" if item.kind == "video" else "?"
-                    tk.Label(cell, text=icon, font=("", 32), width=6, height=3).pack()
+                    tk.Label(cell, text="🎞", font=("", 32), width=6, height=3).pack()
 
                 tk.Label(cell, text=item.path.name, wraplength=140).pack()
                 tk.Label(cell, text=item.date.strftime("%Y-%m-%d %H:%M")).pack()
                 var = self.selection.setdefault(item.path, tk.BooleanVar(value=True))
                 tk.Checkbutton(cell, text="Inclure", variable=var).pack()
+
+            threading.Thread(
+                target=self._load_thumbnails, args=(items,), daemon=True
+            ).start()
+            self.after(self.POLL_INTERVAL_MS, self._poll_thumbnails)
+
+        def _load_thumbnails(self, items: list) -> None:
+            """Exécuté dans un thread d'arrière-plan : ne touche à aucun
+            widget Tk, se contente de préparer des images Pillow."""
+            for i, item in enumerate(items):
+                if self._closed:
+                    return
+                if item.kind == "pic":
+                    self._thumb_queue.put((i, make_thumbnail(item.path)))
+
+        def _poll_thumbnails(self) -> None:
+            if self._closed:
+                return
+            try:
+                while True:
+                    i, thumb = self._thumb_queue.get_nowait()
+                    label = self._thumb_labels.get(i)
+                    if label is None:
+                        continue
+                    if thumb is None:
+                        label.config(text="?")
+                        continue
+                    from PIL import ImageTk
+
+                    photo = ImageTk.PhotoImage(thumb)
+                    self._images[i] = photo
+                    label.config(image=photo, text="")
+            except queue.Empty:
+                pass
+            self.after(self.POLL_INTERVAL_MS, self._poll_thumbnails)
+
+        def destroy(self) -> None:
+            self._closed = True
+            super().destroy()
 
         def _set_all(self, value: bool) -> None:
             for var in self.selection.values():
