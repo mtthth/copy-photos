@@ -16,6 +16,14 @@ Les fichiers déjà copiés (contenu identique) sont détectés et ignorés au
 second passage. En cas de fichier de même nom mais de contenu différent,
 un suffixe est ajouté (`IMG_0001_2.jpg`).
 
+Option "Supprimer les fichiers de la carte SD après copie" : après chaque
+copie (ou pour un fichier déjà présent à l'identique), le fichier source
+et le fichier de destination sont comparés par hash SHA-256 ; le fichier
+n'est supprimé de la source que si les deux hashs correspondent. En cas de
+désaccord, la source est conservée et une erreur est journalisée. Cette
+option est décochée par défaut et demande une confirmation avant de
+lancer la copie, la suppression étant irréversible.
+
 ## Installation
 
 1. Installer [Python 3](https://www.python.org/downloads/) (cocher "Add

@@ -52,8 +52,9 @@ def test_resolve_destination_new_file(tmp_path):
     dest_dir.mkdir()
     src = tmp_path / "IMG_0001.jpg"
     src.write_bytes(b"hello")
-    target = cp.resolve_destination(src, dest_dir)
-    assert target == dest_dir / "IMG_0001.jpg"
+    resolved = cp.resolve_destination(src, dest_dir)
+    assert resolved.path == dest_dir / "IMG_0001.jpg"
+    assert resolved.already_present is False
 
 
 def test_resolve_destination_skips_identical(tmp_path):
@@ -62,7 +63,9 @@ def test_resolve_destination_skips_identical(tmp_path):
     src = tmp_path / "IMG_0001.jpg"
     src.write_bytes(b"hello")
     (dest_dir / "IMG_0001.jpg").write_bytes(b"hello")
-    assert cp.resolve_destination(src, dest_dir) is None
+    resolved = cp.resolve_destination(src, dest_dir)
+    assert resolved.path == dest_dir / "IMG_0001.jpg"
+    assert resolved.already_present is True
 
 
 def test_resolve_destination_renames_on_conflict(tmp_path):
@@ -71,8 +74,20 @@ def test_resolve_destination_renames_on_conflict(tmp_path):
     src = tmp_path / "IMG_0001.jpg"
     src.write_bytes(b"new content")
     (dest_dir / "IMG_0001.jpg").write_bytes(b"old content")
-    target = cp.resolve_destination(src, dest_dir)
-    assert target == dest_dir / "IMG_0001_2.jpg"
+    resolved = cp.resolve_destination(src, dest_dir)
+    assert resolved.path == dest_dir / "IMG_0001_2.jpg"
+    assert resolved.already_present is False
+
+
+def test_verify_identical(tmp_path):
+    a = tmp_path / "a.bin"
+    b = tmp_path / "b.bin"
+    c = tmp_path / "c.bin"
+    a.write_bytes(b"same content")
+    b.write_bytes(b"same content")
+    c.write_bytes(b"different content")
+    assert cp.verify_identical(a, b) is True
+    assert cp.verify_identical(a, c) is False
 
 
 def test_copy_media_end_to_end(tmp_path):
@@ -106,3 +121,43 @@ def test_copy_media_end_to_end(tmp_path):
     stats2 = cp.copy_media(source, dest)
     assert stats2.copied == 0
     assert stats2.skipped_identical == 2
+
+
+def test_copy_media_delete_source_after_verified_copy(tmp_path):
+    source = tmp_path / "sd_card"
+    source.mkdir()
+    dest = tmp_path / "hdd"
+    dest.mkdir()
+
+    photo = source / "IMG_0001.jpg"
+    _make_exif_jpeg(photo, datetime(2024, 1, 15, 8, 0, 0))
+
+    stats = cp.copy_media(source, dest, delete_source=True)
+
+    assert stats.copied == 1
+    assert stats.deleted == 1
+    assert stats.errors == 0
+    assert not photo.exists()
+    assert (dest / "2024" / "2024-01" / "2024-01-15" / "pic" / "IMG_0001.jpg").exists()
+
+
+def test_copy_media_delete_source_also_removes_already_present_files(tmp_path):
+    source = tmp_path / "sd_card"
+    source.mkdir()
+    dest = tmp_path / "hdd"
+    dest.mkdir()
+
+    photo = source / "IMG_0001.jpg"
+    date = datetime(2024, 1, 15, 8, 0, 0)
+    _make_exif_jpeg(photo, date)
+
+    # First pass copies the file to the destination (no deletion requested).
+    cp.copy_media(source, dest)
+    assert photo.exists()
+
+    # Second pass: file already present and identical -> still eligible for
+    # deletion from the source once re-verified by hash.
+    stats = cp.copy_media(source, dest, delete_source=True)
+    assert stats.skipped_identical == 1
+    assert stats.deleted == 1
+    assert not photo.exists()

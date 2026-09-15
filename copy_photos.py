@@ -11,6 +11,7 @@ un suffixe numérique est ajouté.
 from __future__ import annotations
 
 import filecmp
+import hashlib
 import os
 import queue
 import shutil
@@ -18,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, NamedTuple, Optional
 
 PHOTO_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".heic", ".heif",
@@ -93,22 +94,41 @@ def destination_dir(dest_root: Path, date: datetime, kind: str) -> Path:
     )
 
 
-def resolve_destination(src: Path, dest_dir: Path) -> Optional[Path]:
+class ResolvedDestination(NamedTuple):
+    path: Path
+    already_present: bool
+
+
+def resolve_destination(src: Path, dest_dir: Path) -> ResolvedDestination:
     """Détermine où copier `src` dans `dest_dir`.
 
-    Renvoie None si un fichier identique existe déjà à destination (à
-    ignorer). Sinon renvoie le chemin de copie, avec un suffixe numérique
-    (_2, _3, ...) si un fichier de même nom mais de contenu différent existe
-    déjà.
+    `already_present` est vrai si un fichier identique existe déjà à
+    destination (`path` pointe alors sur ce fichier existant, à ne pas
+    recopier). Sinon `path` est le chemin où copier, avec un suffixe
+    numérique (_2, _3, ...) si un fichier de même nom mais de contenu
+    différent existe déjà.
     """
     target = dest_dir / src.name
     n = 1
     while target.exists():
         if filecmp.cmp(src, target, shallow=False):
-            return None
+            return ResolvedDestination(target, already_present=True)
         n += 1
         target = dest_dir / f"{src.stem}_{n}{src.suffix}"
-    return target
+    return ResolvedDestination(target, already_present=False)
+
+
+def sha256sum(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_identical(a: Path, b: Path) -> bool:
+    """Compare deux fichiers par hash SHA-256 (vérification avant suppression)."""
+    return sha256sum(a) == sha256sum(b)
 
 
 def iter_media_files(source: Path) -> Iterator[tuple[Path, str]]:
@@ -125,6 +145,7 @@ class CopyStats:
     total: int = 0
     copied: int = 0
     skipped_identical: int = 0
+    deleted: int = 0
     errors: int = 0
 
 
@@ -134,6 +155,7 @@ def copy_media(
     log: Callable[[str], None] = lambda msg: None,
     progress: Callable[[int, int], None] = lambda done, total: None,
     should_stop: Callable[[], bool] = lambda: False,
+    delete_source: bool = False,
 ) -> CopyStats:
     stats = CopyStats()
     files = list(iter_media_files(source))
@@ -146,14 +168,23 @@ def copy_media(
             date = get_media_date(path, kind)
             target_dir = destination_dir(dest_root, date, kind)
             target_dir.mkdir(parents=True, exist_ok=True)
-            target = resolve_destination(path, target_dir)
-            if target is None:
+            resolved = resolve_destination(path, target_dir)
+            if resolved.already_present:
                 stats.skipped_identical += 1
                 log(f"Déjà copié : {path.name}")
             else:
-                shutil.copy2(path, target)
+                shutil.copy2(path, resolved.path)
                 stats.copied += 1
-                log(f"Copié : {path.name} -> {target.relative_to(dest_root)}")
+                log(f"Copié : {path.name} -> {resolved.path.relative_to(dest_root)}")
+
+            if delete_source:
+                if verify_identical(path, resolved.path):
+                    path.unlink()
+                    stats.deleted += 1
+                    log(f"Source supprimée (hash vérifié) : {path.name}")
+                else:
+                    stats.errors += 1
+                    log(f"ERREUR : hash différent après copie, source conservée : {path.name}")
         except Exception as exc:
             stats.errors += 1
             log(f"Erreur sur {path.name} : {exc}")
@@ -173,6 +204,7 @@ def run_gui() -> None:
 
             self.source_var = tk.StringVar()
             self.dest_var = tk.StringVar()
+            self.delete_var = tk.BooleanVar(value=False)
             self._queue: "queue.Queue" = queue.Queue()
             self._stop_requested = False
 
@@ -192,6 +224,12 @@ def run_gui() -> None:
             tk.Entry(frm, textvariable=self.dest_var, width=60).grid(row=1, column=1, sticky="we")
             tk.Button(frm, text="Parcourir...", command=self._pick_dest).grid(row=1, column=2)
             frm.columnconfigure(1, weight=1)
+
+            tk.Checkbutton(
+                self,
+                text="Supprimer les fichiers de la carte SD après copie (une fois le hash vérifié identique)",
+                variable=self.delete_var,
+            ).pack(fill="x", padx=8, anchor="w")
 
             btn_frm = tk.Frame(self)
             btn_frm.pack(fill="x", **pad)
@@ -235,6 +273,17 @@ def run_gui() -> None:
                 messagebox.showerror("Erreur", "Choisis un dossier de destination valide.")
                 return
 
+            delete_source = self.delete_var.get()
+            if delete_source:
+                confirmed = messagebox.askyesno(
+                    "Confirmer la suppression",
+                    "Chaque fichier sera supprimé de la carte SD juste après sa copie, "
+                    "une fois vérifié identique par hash SHA-256. Cette suppression est "
+                    "irréversible. Continuer ?",
+                )
+                if not confirmed:
+                    return
+
             self._stop_requested = False
             self.start_btn.config(state="disabled")
             self.stop_btn.config(state="normal")
@@ -243,13 +292,15 @@ def run_gui() -> None:
             self.log_widget.delete("1.0", "end")
             self.log_widget.config(state="disabled")
 
-            threading.Thread(target=self._run_copy, args=(source, dest), daemon=True).start()
+            threading.Thread(
+                target=self._run_copy, args=(source, dest, delete_source), daemon=True
+            ).start()
 
         def _stop(self) -> None:
             self._stop_requested = True
             self.stop_btn.config(state="disabled")
 
-        def _run_copy(self, source: Path, dest: Path) -> None:
+        def _run_copy(self, source: Path, dest: Path, delete_source: bool) -> None:
             self._log(f"Analyse de {source} ...")
             stats = copy_media(
                 source,
@@ -257,6 +308,7 @@ def run_gui() -> None:
                 log=self._log,
                 progress=self._progress,
                 should_stop=self._should_stop,
+                delete_source=delete_source,
             )
             self._queue.put(("done", stats))
 
@@ -277,6 +329,7 @@ def run_gui() -> None:
                         self._log(
                             f"Terminé : {stats.copied} copié(s), "
                             f"{stats.skipped_identical} déjà présent(s), "
+                            f"{stats.deleted} supprimé(s) de la source, "
                             f"{stats.errors} erreur(s) sur {stats.total} fichier(s)."
                         )
                         self.start_btn.config(state="normal")
