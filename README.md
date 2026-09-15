@@ -52,6 +52,14 @@ Une fenêtre s'ouvre : choisir le dossier de la carte SD, le dossier de
 destination sur le disque dur, puis cliquer sur "Copier". La progression
 et le journal des fichiers copiés/ignorés s'affichent dans la fenêtre.
 
+Le bouton "Aperçu..." ouvre une fenêtre avec une grille de miniatures de
+toutes les photos et vidéos trouvées sur la carte SD (triées par date),
+chacune avec une case "Inclure" cochée par défaut. Décocher les fichiers à
+ne pas copier, valider, puis cliquer sur "Copier" : seuls les fichiers
+encore cochés sont copiés. Cet aperçu n'est pris en compte que s'il a été
+généré pour le dossier source actuellement sélectionné ; changer de
+dossier source l'invalide.
+
 ## Créer un .exe autonome (optionnel)
 
 Pour éviter d'avoir Python à installer sur chaque machine :

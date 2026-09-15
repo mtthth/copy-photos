@@ -169,6 +169,40 @@ def iter_media_files(source: Path) -> Iterator[tuple[Path, str]]:
 
 
 @dataclass
+class PreviewItem:
+    path: Path
+    kind: str
+    date: datetime
+
+
+def list_preview_items(source: Path) -> list[PreviewItem]:
+    """Liste les photos/vidéos de `source` avec leur date calculée, triées
+    chronologiquement, pour un aperçu avant copie."""
+    items = [
+        PreviewItem(path=path, kind=kind, date=get_media_date(path, kind))
+        for path, kind in iter_media_files(source)
+    ]
+    items.sort(key=lambda item: (item.date, item.path.name))
+    return items
+
+
+def make_thumbnail(path: Path, size: tuple[int, int] = (120, 120)) -> Optional[Any]:
+    """Miniature Pillow pour une photo, ou None si non générable (RAW/HEIC
+    non lus par Pillow, fichier corrompu, ...)."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            img.draft("RGB", size)
+            img = img.convert("RGB")
+            img.thumbnail(size)
+            img.load()
+            return img.copy()
+    except Exception:
+        return None
+
+
+@dataclass
 class CopyStats:
     total: int = 0
     copied: int = 0
@@ -184,9 +218,14 @@ def copy_media(
     progress: Callable[[int, int], None] = lambda done, total: None,
     should_stop: Callable[[], bool] = lambda: False,
     delete_source: bool = False,
+    exclude: Optional[set[Path]] = None,
 ) -> CopyStats:
     stats = CopyStats()
-    files = list(iter_media_files(source))
+    files = [
+        (path, kind)
+        for path, kind in iter_media_files(source)
+        if not exclude or path not in exclude
+    ]
     stats.total = len(files)
     for i, (path, kind) in enumerate(files, start=1):
         if should_stop():
@@ -224,6 +263,81 @@ def run_gui() -> None:
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+    class ScrollableFrame(tk.Frame):
+        """Frame défilable verticalement, utilisée pour la grille de miniatures."""
+
+        def __init__(self, master: tk.Widget) -> None:
+            super().__init__(master)
+            canvas = tk.Canvas(self, highlightthickness=0)
+            scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+            self.inner = tk.Frame(canvas)
+
+            self.inner.bind(
+                "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            canvas.create_window((0, 0), window=self.inner, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+
+    class PreviewWindow(tk.Toplevel):
+        """Fenêtre d'aperçu : grille de miniatures avec case à cocher par
+        fichier pour choisir ce qui sera effectivement copié."""
+
+        COLUMNS = 4
+
+        def __init__(
+            self,
+            master: tk.Widget,
+            items: list,
+            selection: dict,
+        ) -> None:
+            super().__init__(master)
+            self.title(f"Aperçu avant copie ({len(items)} fichier(s))")
+            self.geometry("820x600")
+            self.selection = selection
+            self._images: list = []
+
+            top = tk.Frame(self)
+            top.pack(fill="x", padx=8, pady=4)
+            tk.Button(top, text="Tout cocher", command=lambda: self._set_all(True)).pack(
+                side="left"
+            )
+            tk.Button(
+                top, text="Tout décocher", command=lambda: self._set_all(False)
+            ).pack(side="left", padx=8)
+            tk.Button(top, text="Valider la sélection", command=self.destroy).pack(
+                side="right"
+            )
+
+            scrollable = ScrollableFrame(self)
+            scrollable.pack(fill="both", expand=True, padx=8, pady=4)
+
+            for i, item in enumerate(items):
+                cell = tk.Frame(scrollable.inner, borderwidth=1, relief="groove")
+                cell.grid(row=i // self.COLUMNS, column=i % self.COLUMNS, padx=4, pady=4)
+
+                thumb = make_thumbnail(item.path) if item.kind == "pic" else None
+                if thumb is not None:
+                    from PIL import ImageTk
+
+                    photo = ImageTk.PhotoImage(thumb)
+                    self._images.append(photo)
+                    tk.Label(cell, image=photo).pack()
+                else:
+                    icon = "🎞" if item.kind == "video" else "?"
+                    tk.Label(cell, text=icon, font=("", 32), width=6, height=3).pack()
+
+                tk.Label(cell, text=item.path.name, wraplength=140).pack()
+                tk.Label(cell, text=item.date.strftime("%Y-%m-%d %H:%M")).pack()
+                var = self.selection.setdefault(item.path, tk.BooleanVar(value=True))
+                tk.Checkbutton(cell, text="Inclure", variable=var).pack()
+
+        def _set_all(self, value: bool) -> None:
+            for var in self.selection.values():
+                var.set(value)
+
     class App(tk.Tk):
         def __init__(self) -> None:
             super().__init__()
@@ -236,12 +350,19 @@ def run_gui() -> None:
             self.delete_var = tk.BooleanVar(value=config.get("delete_source", False))
             self._queue: "queue.Queue" = queue.Queue()
             self._stop_requested = False
+            self._preview_source: Optional[Path] = None
+            self._preview_selection: dict = {}
 
             self._build_widgets()
             self.source_var.trace_add("write", self._save_config)
             self.dest_var.trace_add("write", self._save_config)
             self.delete_var.trace_add("write", self._save_config)
+            self.source_var.trace_add("write", self._clear_preview)
             self.after(100, self._poll_queue)
+
+        def _clear_preview(self, *_args: object) -> None:
+            self._preview_source = None
+            self._preview_selection = {}
 
         def _save_config(self, *_args: object) -> None:
             save_config(
@@ -274,10 +395,12 @@ def run_gui() -> None:
 
             btn_frm = tk.Frame(self)
             btn_frm.pack(fill="x", **pad)
+            self.preview_btn = tk.Button(btn_frm, text="Aperçu...", command=self._preview)
+            self.preview_btn.pack(side="left")
             self.start_btn = tk.Button(btn_frm, text="Copier", command=self._start)
-            self.start_btn.pack(side="left")
+            self.start_btn.pack(side="left", padx=8)
             self.stop_btn = tk.Button(btn_frm, text="Arrêter", command=self._stop, state="disabled")
-            self.stop_btn.pack(side="left", padx=8)
+            self.stop_btn.pack(side="left")
 
             self.progress = ttk.Progressbar(self, mode="determinate")
             self.progress.pack(fill="x", **pad)
@@ -304,6 +427,19 @@ def run_gui() -> None:
         def _should_stop(self) -> bool:
             return self._stop_requested
 
+        def _preview(self) -> None:
+            source = Path(self.source_var.get().strip())
+            if not source.is_dir():
+                messagebox.showerror("Erreur", "Choisis un dossier source valide (carte SD).")
+                return
+            self.preview_btn.config(state="disabled")
+            self._log(f"Analyse de {source} pour l'aperçu...")
+            threading.Thread(target=self._build_preview, args=(source,), daemon=True).start()
+
+        def _build_preview(self, source: Path) -> None:
+            items = list_preview_items(source)
+            self._queue.put(("preview_ready", (source, items)))
+
         def _start(self) -> None:
             source = Path(self.source_var.get().strip())
             dest = Path(self.dest_var.get().strip())
@@ -313,6 +449,17 @@ def run_gui() -> None:
             if not dest.is_dir():
                 messagebox.showerror("Erreur", "Choisis un dossier de destination valide.")
                 return
+
+            exclude = None
+            if self._preview_source == source and self._preview_selection:
+                exclude = {
+                    path for path, var in self._preview_selection.items() if not var.get()
+                }
+                if len(exclude) == len(self._preview_selection):
+                    messagebox.showerror(
+                        "Erreur", "Aucun fichier sélectionné dans l'aperçu."
+                    )
+                    return
 
             delete_source = self.delete_var.get()
             if delete_source:
@@ -334,14 +481,16 @@ def run_gui() -> None:
             self.log_widget.config(state="disabled")
 
             threading.Thread(
-                target=self._run_copy, args=(source, dest, delete_source), daemon=True
+                target=self._run_copy, args=(source, dest, delete_source, exclude), daemon=True
             ).start()
 
         def _stop(self) -> None:
             self._stop_requested = True
             self.stop_btn.config(state="disabled")
 
-        def _run_copy(self, source: Path, dest: Path, delete_source: bool) -> None:
+        def _run_copy(
+            self, source: Path, dest: Path, delete_source: bool, exclude: Optional[set]
+        ) -> None:
             self._log(f"Analyse de {source} ...")
             stats = copy_media(
                 source,
@@ -350,6 +499,7 @@ def run_gui() -> None:
                 progress=self._progress,
                 should_stop=self._should_stop,
                 delete_source=delete_source,
+                exclude=exclude,
             )
             self._queue.put(("done", stats))
 
@@ -365,6 +515,20 @@ def run_gui() -> None:
                     elif kind == "progress":
                         done, total = payload
                         self.progress.config(maximum=max(total, 1), value=done)
+                    elif kind == "preview_ready":
+                        source, items = payload
+                        self.preview_btn.config(state="normal")
+                        if not items:
+                            messagebox.showinfo(
+                                "Aperçu", "Aucune photo ou vidéo trouvée sur la source."
+                            )
+                        else:
+                            self._preview_source = source
+                            self._preview_selection = {
+                                item.path: tk.BooleanVar(value=True) for item in items
+                            }
+                            self._log(f"Aperçu : {len(items)} fichier(s) trouvé(s).")
+                            PreviewWindow(self, items, self._preview_selection)
                     elif kind == "done":
                         stats: CopyStats = payload
                         self._log(

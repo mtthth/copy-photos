@@ -110,6 +110,59 @@ def test_verify_identical(tmp_path):
     assert cp.verify_identical(a, c) is False
 
 
+def test_list_preview_items_sorted_by_date(tmp_path):
+    source = tmp_path / "sd_card"
+    source.mkdir()
+
+    later = source / "IMG_0002.jpg"
+    _make_exif_jpeg(later, datetime(2024, 1, 15, 12, 0, 0))
+    earlier = source / "IMG_0001.jpg"
+    _make_exif_jpeg(earlier, datetime(2024, 1, 15, 8, 0, 0))
+    video = source / "CLIP_0001.mp4"
+    video.write_bytes(b"fake video data")
+    ts = time.mktime(datetime(2024, 1, 15, 10, 0, 0).timetuple())
+    os.utime(video, (ts, ts))
+    (source / "readme.txt").write_text("not media")
+
+    items = cp.list_preview_items(source)
+
+    assert [item.path.name for item in items] == ["IMG_0001.jpg", "CLIP_0001.mp4", "IMG_0002.jpg"]
+    assert [item.kind for item in items] == ["pic", "video", "pic"]
+
+
+def test_make_thumbnail_for_photo(tmp_path):
+    photo = tmp_path / "IMG_0001.jpg"
+    Image.new("RGB", (400, 300), "green").save(photo)
+    thumb = cp.make_thumbnail(photo, size=(100, 100))
+    assert thumb is not None
+    assert thumb.width <= 100 and thumb.height <= 100
+
+
+def test_make_thumbnail_returns_none_for_non_image(tmp_path):
+    fake = tmp_path / "clip.mp4"
+    fake.write_bytes(b"not a real video/image")
+    assert cp.make_thumbnail(fake) is None
+
+
+def test_copy_media_with_exclude(tmp_path):
+    source = tmp_path / "sd_card"
+    source.mkdir()
+    dest = tmp_path / "hdd"
+    dest.mkdir()
+
+    keep = source / "IMG_0001.jpg"
+    _make_exif_jpeg(keep, datetime(2024, 1, 15, 8, 0, 0))
+    skip = source / "IMG_0002.jpg"
+    _make_exif_jpeg(skip, datetime(2024, 1, 15, 9, 0, 0))
+
+    stats = cp.copy_media(source, dest, exclude={skip})
+
+    assert stats.total == 1
+    assert stats.copied == 1
+    assert (dest / "2024" / "2024-01" / "2024-01-15" / "IMG_0001.jpg").exists()
+    assert not (dest / "2024" / "2024-01" / "2024-01-15" / "IMG_0002.jpg").exists()
+
+
 def test_copy_media_end_to_end(tmp_path):
     source = tmp_path / "sd_card"
     source.mkdir()
