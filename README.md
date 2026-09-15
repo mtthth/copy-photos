@@ -4,8 +4,8 @@ Script Windows (Python) qui copie les photos et vidéos d'une carte SD vers
 un disque dur en les rangeant par date de prise de vue :
 
 ```
-<destination>/YYYY/YYYY-MM/YYYY-MM-DD/pic/    -> photos
-<destination>/YYYY/YYYY-MM/YYYY-MM-DD/video/  -> vidéos
+<destination>/YYYY/YYYY-MM/YYYY-MM-DD/         -> photos
+<destination>/YYYY/YYYY-MM/YYYY-MM-DD/video/   -> vidéos
 ```
 
 La date utilisée est la date EXIF `DateTimeOriginal` de la photo quand

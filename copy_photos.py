@@ -1,5 +1,6 @@
 """Copie les photos et vidéos d'une carte SD vers un disque dur en les
-rangeant par date de prise de vue : YYYY/YYYY-MM/YYYY-MM-DD/pic (ou /video).
+rangeant par date de prise de vue : YYYY/YYYY-MM/YYYY-MM-DD/ (photos),
+YYYY/YYYY-MM/YYYY-MM-DD/video/ (vidéos).
 
 Utilisation : lancer ce script (double-clic ou `python copy_photos.py`),
 choisir le dossier source (carte SD) et le dossier de destination (disque
@@ -85,13 +86,13 @@ def get_media_date(path: Path, kind: str) -> datetime:
 
 
 def destination_dir(dest_root: Path, date: datetime, kind: str) -> Path:
-    return (
+    day_dir = (
         dest_root
         / f"{date.year:04d}"
         / f"{date.year:04d}-{date.month:02d}"
         / f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
-        / kind
     )
+    return day_dir / "video" if kind == "video" else day_dir
 
 
 class ResolvedDestination(NamedTuple):

@@ -41,10 +41,16 @@ def test_get_photo_date_falls_back_to_mtime(tmp_path):
     assert (result.year, result.month, result.day) == (2021, 6, 1)
 
 
-def test_destination_dir_layout(tmp_path):
+def test_destination_dir_layout_photo(tmp_path):
     date = datetime(2023, 7, 4, 10, 20, 30)
     result = cp.destination_dir(tmp_path, date, "pic")
-    assert result == tmp_path / "2023" / "2023-07" / "2023-07-04" / "pic"
+    assert result == tmp_path / "2023" / "2023-07" / "2023-07-04"
+
+
+def test_destination_dir_layout_video(tmp_path):
+    date = datetime(2023, 7, 4, 10, 20, 30)
+    result = cp.destination_dir(tmp_path, date, "video")
+    assert result == tmp_path / "2023" / "2023-07" / "2023-07-04" / "video"
 
 
 def test_resolve_destination_new_file(tmp_path):
@@ -114,7 +120,7 @@ def test_copy_media_end_to_end(tmp_path):
     assert stats.copied == 2
     assert stats.errors == 0
 
-    assert (dest / "2024" / "2024-01" / "2024-01-15" / "pic" / "IMG_0001.jpg").exists()
+    assert (dest / "2024" / "2024-01" / "2024-01-15" / "IMG_0001.jpg").exists()
     assert (dest / "2024" / "2024-01" / "2024-01-15" / "video" / "CLIP_0001.mp4").exists()
 
     # Re-running should skip the already-copied identical files.
@@ -138,7 +144,7 @@ def test_copy_media_delete_source_after_verified_copy(tmp_path):
     assert stats.deleted == 1
     assert stats.errors == 0
     assert not photo.exists()
-    assert (dest / "2024" / "2024-01" / "2024-01-15" / "pic" / "IMG_0001.jpg").exists()
+    assert (dest / "2024" / "2024-01" / "2024-01-15" / "IMG_0001.jpg").exists()
 
 
 def test_copy_media_delete_source_also_removes_already_present_files(tmp_path):
